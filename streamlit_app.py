@@ -4,7 +4,7 @@ import pandas as pd
 from PyPDF2 import PdfReader
 from docx import Document
 import tempfile
-from groq import Groq  # Hypothetical Groq API client
+from groq import Groq  # Groq API client
 
 # Try to import UnstructuredFileLoader, fallback if not available
 try:
@@ -14,8 +14,8 @@ except ImportError:
     UNSTRUCTURED_AVAILABLE = False
     st.warning("UnstructuredFileLoader not available. Some file types may not be processed correctly.")
 
-# Initialize Groq client (replace with your API key)
-client = Groq(api_key="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")
+# Initialize Groq client with your API key
+client = Groq(api_key="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")  # Replace with your actual Groq API key
 
 # Function to process different file types
 def process_uploaded_file(file):
@@ -43,7 +43,6 @@ def process_uploaded_file(file):
             text = "\n".join([para.text for para in doc.paragraphs])
         
         elif UNSTRUCTURED_AVAILABLE:
-            # Fallback to UnstructuredFileLoader for other files
             loader = UnstructuredFileLoader(tmp_file_path)
             docs = loader.load()
             text = "\n".join([doc.page_content for doc in docs])
@@ -55,7 +54,7 @@ def process_uploaded_file(file):
     finally:
         os.unlink(tmp_file_path)
 
-# Function to get response from Groq
+# Function to get response from Groq using Mixtral model
 def get_grok_response(query: str, context: str = "") -> str:
     try:
         if context:
@@ -64,9 +63,9 @@ def get_grok_response(query: str, context: str = "") -> str:
             prompt = query
             
         response = client.chat.completions.create(
-            model="grok-3",  # Hypothetical model name
+            model="mixtral-8x7b-32768",  # Using Mixtral model available via Groq
             messages=[
-                {"role": "system", "content": "You are a helpful AI assistant."},
+                {"role": "system", "content": "You are a helpful AI assistant that can answer questions based on provided context or general knowledge."},
                 {"role": "user", "content": prompt}
             ],
             stream=False
@@ -77,7 +76,7 @@ def get_grok_response(query: str, context: str = "") -> str:
 
 # Streamlit app
 def main():
-    st.title("Grok Chatbot with Document Upload")
+    st.title("Grok Chatbot with Document Upload (Powered by Mixtral)")
     
     if 'chat_history' not in st.session_state:
         st.session_state.chat_history = []
@@ -96,9 +95,10 @@ def main():
                 for file in uploaded_files:
                     content = process_uploaded_file(file)
                     st.session_state.uploaded_content += f"\n\nFile: {file.name}\n{content}"
+                    st.write(f"Debug: Extracted content from {file.name}: {content[:200]}...")  # Debug output
                 st.success("Files processed successfully!")
 
-    st.header("Chat with Grok")
+    st.header("Chat with Mixtral")
     for message in st.session_state.chat_history:
         with st.chat_message(message["role"]):
             st.write(message["content"])
