@@ -1,8 +1,10 @@
 streamlit
-openai
-streamlit
 langchain
 unstructured
+# Additional dependencies for unstructured (optional but recommended)
+libmagic  # Might be needed on some systems
+python-magic  # For file type detection
+python-magic-bin  # For Windows compatibility
 PyPDF2
 pandas
 openpyxl
