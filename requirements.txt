@@ -1,2 +1,10 @@
 streamlit
 openai
+streamlit
+langchain
+unstructured
+PyPDF2
+pandas
+openpyxl
+python-docx
+groq
