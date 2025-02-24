@@ -76,7 +76,7 @@ def get_grok_response(query: str, context: str = "") -> str:
 
 # Streamlit app
 def main():
-    st.title("Grok Chatbot with Document Upload (Powered by Mixtral)")
+    st.title("savior👏")
     
     if 'chat_history' not in st.session_state:
         st.session_state.chat_history = []
