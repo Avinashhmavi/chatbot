@@ -1,56 +1,127 @@
 import streamlit as st
-from openai import OpenAI
+from langchain.document_loaders import UnstructuredFileLoader
+import os
+import pandas as pd
+from PyPDF2 import PdfReader
+from docx import Document
+import tempfile
+from groq import Groq  # Hypothetical Groq API client
+from typing import List, Dict
 
-# Show title and description.
-st.title("💬 Chatbot")
-st.write(
-    "This is a simple chatbot that uses OpenAI's GPT-3.5 model to generate responses. "
-    "To use this app, you need to provide an OpenAI API key, which you can get [here](https://platform.openai.com/account/api-keys). "
-    "You can also learn how to build this app step by step by [following our tutorial](https://docs.streamlit.io/develop/tutorials/llms/build-conversational-apps)."
-)
+# Initialize Groq client (you'd need API key from xAI)
+client = Groq(api_key="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")
 
-# Ask user for their OpenAI API key via `st.text_input`.
-# Alternatively, you can store the API key in `./.streamlit/secrets.toml` and access it
-# via `st.secrets`, see https://docs.streamlit.io/develop/concepts/connections/secrets-management
-openai_api_key = st.text_input("OpenAI API Key", type="password")
-if not openai_api_key:
-    st.info("Please add your OpenAI API key to continue.", icon="🗝️")
-else:
+# Function to process different file types
+def process_uploaded_file(file) -> str:
+    # Create a temporary file
+    with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
+        tmp_file.write(file.read())
+        tmp_file_path = tmp_file.name
 
-    # Create an OpenAI client.
-    client = OpenAI(api_key=openai_api_key)
+    try:
+        # Handle different file types
+        if file.name.endswith('.pdf'):
+            reader = PdfReader(tmp_file_path)
+            text = ""
+            for page in reader.pages:
+                text += page.extract_text() + "\n"
+        
+        elif file.name.endswith('.csv'):
+            df = pd.read_csv(tmp_file_path)
+            text = df.to_string()
+        
+        elif file.name.endswith(('.xls', '.xlsx')):
+            df = pd.read_excel(tmp_file_path)
+            text = df.to_string()
+        
+        elif file.name.endswith('.docx'):
+            doc = Document(tmp_file_path)
+            text = "\n".join([para.text for para in doc.paragraphs])
+        
+        else:
+            # For other text-based files
+            loader = UnstructuredFileLoader(tmp_file_path)
+            docs = loader.load()
+            text = "\n".join([doc.page_content for doc in docs])
+        
+        return text
+    
+    finally:
+        os.unlink(tmp_file_path)
 
-    # Create a session state variable to store the chat messages. This ensures that the
-    # messages persist across reruns.
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
-
-    # Display the existing chat messages via `st.chat_message`.
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-
-    # Create a chat input field to allow the user to enter a message. This will display
-    # automatically at the bottom of the page.
-    if prompt := st.chat_input("What is up?"):
-
-        # Store and display the current prompt.
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
-
-        # Generate a response using the OpenAI API.
-        stream = client.chat.completions.create(
-            model="gpt-3.5-turbo",
+# Function to get response from Groq
+def get_grok_response(query: str, context: str = "") -> str:
+    try:
+        if context:
+            prompt = f"Context: {context}\n\nQuestion: {query}"
+        else:
+            prompt = query
+            
+        response = client.chat.completions.create(
+            model="grok-3",  # Hypothetical model name
             messages=[
-                {"role": m["role"], "content": m["content"]}
-                for m in st.session_state.messages
+                {"role": "system", "content": "You are a helpful AI assistant that can answer questions based on provided context or general knowledge."},
+                {"role": "user", "content": prompt}
             ],
-            stream=True,
+            stream=False
         )
+        return response.choices[0].message.content
+    except Exception as e:
+        return f"Error: {str(e)}"
 
-        # Stream the response to the chat using `st.write_stream`, then store it in 
-        # session state.
+# Streamlit app
+def main():
+    st.title("Grok Chatbot with Document Upload")
+    
+    # Initialize session state for chat history and uploaded content
+    if 'chat_history' not in st.session_state:
+        st.session_state.chat_history = []
+    if 'uploaded_content' not in st.session_state:
+        st.session_state.uploaded_content = ""
+
+    # Sidebar for file upload
+    with st.sidebar:
+        st.header("Upload Documents")
+        uploaded_files = st.file_uploader(
+            "Upload files (PDF, CSV, Excel, Word, etc.)",
+            accept_multiple_files=True
+        )
+        
+        if uploaded_files:
+            with st.spinner("Processing files..."):
+                for file in uploaded_files:
+                    content = process_uploaded_file(file)
+                    st.session_state.uploaded_content += f"\n\nFile: {file.name}\n{content}"
+                st.success("Files processed successfully!")
+
+    # Chat interface
+    st.header("Chat with Grok")
+    
+    # Display chat history
+    for message in st.session_state.chat_history:
+        with st.chat_message(message["role"]):
+            st.write(message["content"])
+
+    # Chat input
+    if prompt := st.chat_input("Ask anything..."):
+        # Display user message
+        with st.chat_message("user"):
+            st.write(prompt)
+        
+        # Add to chat history
+        st.session_state.chat_history.append({"role": "user", "content": prompt})
+        
+        # Get and display Grok's response
         with st.chat_message("assistant"):
-            response = st.write_stream(stream)
-        st.session_state.messages.append({"role": "assistant", "content": response})
+            with st.spinner("Thinking..."):
+                response = get_grok_response(
+                    prompt,
+                    st.session_state.uploaded_content
+                )
+                st.write(response)
+        
+        # Add response to chat history
+        st.session_state.chat_history.append({"role": "assistant", "content": response})
+
+if __name__ == "__main__":
+    main()
