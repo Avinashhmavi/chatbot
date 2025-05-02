@@ -75,7 +75,7 @@ def get_general_llm():
     return ChatOpenAI(model="gpt-3.5-turbo", temperature=0.7, openai_api_key=openai_api_key)
 
 # Streamlit UI
-st.title("Document Q&A with Chat")
+st.title("💬🤖 ChatBOT")
 
 # File upload section
 st.header("Upload Document")
