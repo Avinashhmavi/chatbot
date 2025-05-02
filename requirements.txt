@@ -1,9 +1,9 @@
 streamlit
 langchain
+langchain-openai
+langchain-community
+faiss-cpu
+pdfplumber
 unstructured
-python-magic  # Works on Linux/macOS
-PyPDF2
-pandas
 openpyxl
 python-docx
-groq
