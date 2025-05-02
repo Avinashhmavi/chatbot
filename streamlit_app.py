@@ -1,118 +1,146 @@
 import streamlit as st
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain.memory import ConversationBufferMemory
+from langchain.chains import ConversationalRetrievalChain
+from langchain_community.vectorstores import FAISS
+from langchain_community.document_loaders import PDFPlumberLoader, UnstructuredExcelLoader, CSVLoader, UnstructuredWordDocumentLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.schema import HumanMessage
 import os
-import pandas as pd
-from PyPDF2 import PdfReader
-from docx import Document
 import tempfile
-from groq import Groq  # Groq API client
+import shutil
+import warnings
 
-# Try to import UnstructuredFileLoader, fallback if not available
-try:
-    from langchain.document_loaders import UnstructuredFileLoader
-    UNSTRUCTURED_AVAILABLE = True
-except ImportError:
-    UNSTRUCTURED_AVAILABLE = False
-    st.warning("UnstructuredFileLoader not available. Some file types may not be processed correctly.")
+warnings.simplefilter("ignore", category=UserWarning)
 
-# Initialize Groq client with your API key
-client = Groq(api_key="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")  # Replace with your actual Groq API key
+# Set page configuration
+st.set_page_config(page_title="Document Q&A", layout="wide")
 
-# Function to process different file types
-def process_uploaded_file(file):
-    with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
-        tmp_file.write(file.read())
-        tmp_file_path = tmp_file.name
+# Initialize session state for vector store, memory, and RAG chain
+if "vector_store" not in st.session_state:
+    st.session_state.vector_store = None
+if "memory" not in st.session_state:
+    st.session_state.memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
+if "rag_chain" not in st.session_state:
+    st.session_state.rag_chain = None
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
 
-    try:
-        if file.name.endswith('.pdf'):
-            reader = PdfReader(tmp_file_path)
-            text = ""
-            for page in reader.pages:
-                text += page.extract_text() + "\n"
-        
-        elif file.name.endswith('.csv'):
-            df = pd.read_csv(tmp_file_path)
-            text = df.to_string()
-        
-        elif file.name.endswith(('.xls', '.xlsx')):
-            df = pd.read_excel(tmp_file_path)
-            text = df.to_string()
-        
-        elif file.name.endswith('.docx'):
-            doc = Document(tmp_file_path)
-            text = "\n".join([para.text for para in doc.paragraphs])
-        
-        elif UNSTRUCTURED_AVAILABLE:
-            loader = UnstructuredFileLoader(tmp_file_path)
-            docs = loader.load()
-            text = "\n".join([doc.page_content for doc in docs])
-        else:
-            text = "File type not supported without UnstructuredFileLoader."
-        
-        return text
+# Supported file extensions
+SUPPORTED_EXTENSIONS = {".pdf", ".xlsx", ".xls", ".csv", ".doc", ".docx"}
+
+def process_file(file_path: str, file_extension: str):
+    """Process uploaded file based on its extension."""
+    documents = []
     
-    finally:
-        os.unlink(tmp_file_path)
+    if file_extension == ".pdf":
+        loader = PDFPlumberLoader(file_path)
+        documents = loader.load()
+    elif file_extension in [".xlsx", ".xls"]:
+        loader = UnstructuredExcelLoader(file_path)
+        documents = loader.load()
+    elif file_extension == ".csv":
+        loader = CSVLoader(file_path)
+        documents = loader.load()
+    elif file_extension in [".doc", ".docx"]:
+        loader = UnstructuredWordDocumentLoader(file_path)
+        documents = loader.load()
+    
+    return documents
 
-# Function to get response from Groq using Mixtral model
-def get_grok_response(query: str, context: str = "") -> str:
+def initialize_rag_chain(documents):
+    """Initialize RAG chain with processed documents."""
+    # Access API key from Streamlit secrets
+    openai_api_key = st.secrets["OPENAI_API_KEY"]
+    
+    # Split text into chunks for embeddings
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
+    docs = text_splitter.split_documents(documents)
+    
+    # Create embeddings and store them in FAISS
+    embeddings = OpenAIEmbeddings(openai_api_key=openai_api_key)
+    st.session_state.vector_store = FAISS.from_documents(docs, embeddings)
+    retriever = st.session_state.vector_store.as_retriever(search_type="mmr", search_kwargs={"k": 5, "fetch_k": 10})
+    
+    # Create the ConversationalRetrievalChain
+    llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0.7, openai_api_key=openai_api_key)
+    st.session_state.rag_chain = ConversationalRetrievalChain.from_llm(
+        llm, retriever=retriever, memory=st.session_state.memory
+    )
+
+# Initialize a separate LLM for general questions
+@st.cache_resource
+def get_general_llm():
+    openai_api_key = st.secrets["OPENAI_API_KEY"]
+    return ChatOpenAI(model="gpt-3.5-turbo", temperature=0.7, openai_api_key=openai_api_key)
+
+# Streamlit UI
+st.title("Document Q&A with Chat")
+
+# File upload section
+st.header("Upload Document")
+uploaded_file = st.file_uploader(
+    "Upload a document (PDF, Excel, CSV, Word)", 
+    type=["pdf", "xlsx", "xls", "csv", "doc", "docx"]
+)
+
+if uploaded_file:
     try:
-        if context:
-            prompt = f"Context: {context}\n\nQuestion: {query}"
+        # Check file extension
+        file_extension = os.path.splitext(uploaded_file.name)[1].lower()
+        if file_extension not in SUPPORTED_EXTENSIONS:
+            st.error("Unsupported file format. Supported formats: PDF, Excel, CSV, Word")
         else:
-            prompt = query
+            # Create temporary file
+            with tempfile.NamedTemporaryFile(delete=False, suffix=file_extension) as temp_file:
+                shutil.copyfileobj(uploaded_file, temp_file)
+                temp_file_path = temp_file.name
             
-        response = client.chat.completions.create(
-            model="mixtral-8x7b-32768",  # Using Mixtral model available via Groq
-            messages=[
-                {"role": "system", "content": "You are a helpful AI assistant that can answer questions based on provided context or general knowledge."},
-                {"role": "user", "content": prompt}
-            ],
-            stream=False
-        )
-        return response.choices[0].message.content
-    except Exception as e:
-        return f"Error: {str(e)}"
-
-# Streamlit app
-def main():
-    st.title("savior👏")
+            try:
+                # Process the uploaded file
+                documents = process_file(temp_file_path, file_extension)
+                
+                if not documents:
+                    st.error("No content could be extracted from the file")
+                else:
+                    # Initialize RAG chain with new documents
+                    initialize_rag_chain(documents)
+                    st.success(f"File {uploaded_file.name} uploaded and processed successfully")
+            
+            finally:
+                # Clean up temporary file
+                os.unlink(temp_file_path)
     
-    if 'chat_history' not in st.session_state:
-        st.session_state.chat_history = []
-    if 'uploaded_content' not in st.session_state:
-        st.session_state.uploaded_content = ""
+    except Exception as e:
+        st.error(f"Error processing file: {str(e)}")
 
-    with st.sidebar:
-        st.header("Upload Documents")
-        uploaded_files = st.file_uploader(
-            "Upload files (PDF, CSV, Excel, Word, etc.)",
-            accept_multiple_files=True
-        )
+# Chat interface
+st.header("Ask a Question")
+question = st.text_input("Enter your question:")
+if st.button("Submit"):
+    if question:
+        try:
+            if st.session_state.rag_chain is None:
+                # Use general LLM for questions without uploaded documents
+                general_llm = get_general_llm()
+                response = general_llm.invoke([HumanMessage(content=question)])
+                answer = response.content
+            else:
+                # Use RAG chain for document-related questions
+                response = st.session_state.rag_chain.invoke({"question": question})
+                answer = response["answer"]
+            
+            # Update chat history
+            st.session_state.chat_history.append(("You", question))
+            st.session_state.chat_history.append(("Assistant", answer))
         
-        if uploaded_files:
-            with st.spinner("Processing files..."):
-                for file in uploaded_files:
-                    content = process_uploaded_file(file)
-                    st.session_state.uploaded_content += f"\n\nFile: {file.name}\n{content}"
-                    st.write(f"Debug: Extracted content from {file.name}: {content[:200]}...")  # Debug output
-                st.success("Files processed successfully!")
+        except Exception as e:
+            st.error(f"Error processing question: {str(e)}")
 
-    st.header("Chat with Mixtral")
-    for message in st.session_state.chat_history:
-        with st.chat_message(message["role"]):
-            st.write(message["content"])
-
-    if prompt := st.chat_input("Ask anything..."):
-        with st.chat_message("user"):
-            st.write(prompt)
-        st.session_state.chat_history.append({"role": "user", "content": prompt})
-        
-        with st.chat_message("assistant"):
-            with st.spinner("Thinking..."):
-                response = get_grok_response(prompt, st.session_state.uploaded_content)
-                st.write(response)
-        st.session_state.chat_history.append({"role": "assistant", "content": response})
-
-if __name__ == "__main__":
-    main()
+# Display chat history
+st.header("Chat History")
+for sender, message in st.session_state.chat_history:
+    if sender == "You":
+        st.markdown(f"**You**: {message}")
+    else:
+        st.markdown(f"**Assistant**: {message}")
